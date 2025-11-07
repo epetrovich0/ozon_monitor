@@ -6,7 +6,6 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from telegram import Bot
 
-# === НАСТРОЙКИ ===
 TELEGRAM_TOKEN = '8531859495:AAHZusQJdMslQ3nQ7yCI1jcBkUwKp9g_nsk'
 CHAT_ID = '789161700'
 OZON_URL = 'https://ozon.by/category/televizory-15528/?category_was_predicted=true&deny_category_prediction=true&from_global=true&rsdiagonalstr=24.000%3B109.000&sorting=price&text=телевизор&__rr=1'
@@ -56,7 +55,7 @@ def get_min_price():
         return None
 
 def main():
-    logger.info("Запуск мониторинга на Render.com")
+    logger.info("Запуск мониторинга...")
     while True:
         price = get_min_price()
         if price and price < TARGET_PRICE:
