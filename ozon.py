@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
+import os
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from telegram import Bot
 import json
-import os
 
 # === НАСТРОЙКИ ===
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 OZON_URL = 'https://ozon.by/category/televizory-15528/?category_was_predicted=true&deny_category_prediction=true&from_global=true&rsdiagonalstr=24.000%3B109.000&sorting=price&text=телевизор&__rr=1'
 TARGET_PRICE = 190.0
-CHECK_INTERVAL_MIN = 30
-DATA_FILE = '/tmp/ozon_monitor.json'  # Хранит состояние (Render — временный диск)
+DATA_FILE = '/tmp/ozon_monitor.json'  # Временный файл (сбрасывается между запусками Actions)
 
 # Логирование
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# === Загрузка/сохранение состояния ===
 def load_state():
     if os.path.exists(DATA_FILE):
         try:
@@ -36,7 +34,6 @@ def save_state(state):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-# === Получение минимальной цены ===
 def get_min_price():
     options = Options()
     options.add_argument('--headless')
@@ -71,79 +68,41 @@ def get_min_price():
         return min_price
 
     except Exception as e:
-        logger.error(f"Ошибка Selenium: {e}")
+        logger.error(f"Ошибка: {e}")
         if 'driver' in locals():
             driver.quit()
         return None
 
-# === Отправка в Telegram ===
 def send_telegram(message):
     try:
         bot.send_message(chat_id=CHAT_ID, text=message)
-        logger.info("Уведомление отправлено в Telegram")
+        logger.info("Уведомление отправлено!")
     except Exception as e:
         logger.error(f"Ошибка отправки: {e}")
 
-# === Основной цикл ===
 def main():
-    logger.info("Запуск мониторинга цен Ozon...")
+    logger.info("Запуск проверки...")
     state = load_state()
 
-    # Первый запуск — отправляем текущую цену
-    if 'first_run' not in state:
-        price = get_min_price()
-        if price:
+    now = datetime.utcnow()
+    today = now.strftime('%Y-%m-%d')
+
+    price = get_min_price()
+    if price:
+        daily_min = state.get('daily_min', price)
+        last_day = state.get('last_day', today)
+
+        # Обновляем ежедневный минимум
+        if price < daily_min:
+            daily_min = price
+
+        # Уведомление при цене ниже порога
+        if price < TARGET_PRICE:
             send_telegram(
-                f"Мониторинг запущен!\n"
-                f"Текущая минимальная цена: {price} BYN\n"
-                f"Уведомление при цене < {TARGET_PRICE} BYN\n"
+                f"ЦЕНА НИЖЕ {TARGET_PRICE} BYN!\n"
+                f"Сейчас: {price} BYN\n"
                 f"{OZON_URL}"
             )
-        state['first_run'] = True
-        state['daily_min'] = price
-        state['last_day'] = datetime.utcnow().strftime('%Y-%m-%d')
-        save_state(state)
-        time.sleep(CHECK_INTERVAL_MIN * 60)
-        return
 
-    # Основной цикл
-    daily_min = state.get('daily_min', float('inf'))
-    last_day = state.get('last_day', datetime.utcnow().strftime('%Y-%m-%d'))
-
-    while True:
-        now = datetime.utcnow()
-        today = now.strftime('%Y-%m-%d')
-
-        price = get_min_price()
-        if price:
-            # Обновляем минимальную за день
-            if price < daily_min:
-                daily_min = price
-
-            # Уведомление при цене ниже порога
-            if price < TARGET_PRICE:
-                send_telegram(
-                    f"ЦЕНА НИЖЕ {TARGET_PRICE} BYN!\n"
-                    f"Сейчас: {price} BYN\n"
-                    f"{OZON_URL}"
-                )
-
-            # Ежедневный отчёт (в 00:00 UTC)
-            if today != last_day and now.hour == 0 and now.minute < 5:
-                send_telegram(
-                    f"Отчёт за {last_day}\n"
-                    f"Минимальная цена за день: {daily_min} BYN\n"
-                    f"{OZON_URL}"
-                )
-                daily_min = price
-                last_day = today
-
-        # Сохраняем состояние
-        state['daily_min'] = daily_min
-        state['last_day'] = last_day
-        save_state(state)
-
-        time.sleep(CHECK_INTERVAL_MIN * 60)
-
-if __name__ == "__main__":
-    main()
+        # Первый запуск (или новый день — отправляем текущую цену)
+        if 'first_run' not in state or today != last
