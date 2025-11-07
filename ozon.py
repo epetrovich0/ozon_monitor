@@ -96,4 +96,67 @@ async def main():
         logger.error("TELEGRAM_TOKEN или CHAT_ID не заданы!")
         return
 
-    bot
+    bot = Bot(token=TELEGRAM_TOKEN)
+    state = load_state()
+
+    now_utc = datetime.now(timezone.utc)
+    now_minsk = now_utc.astimezone(MINSK_TZ)
+    today_minsk = now_minsk.strftime('%Y-%m-%d')
+    is_report_time = now_minsk.hour == 10 and 25 <= now_minsk.minute <= 35
+
+    price = get_min_price()
+    if not price:
+        return
+
+    # === Первый запуск ===
+    if 'first_run' not in state:
+        await send_telegram(
+            bot,
+            f"Мониторинг запущен!\n"
+            f"Текущая минимальная цена: {price} BYN\n"
+            f"Ежедневный отчёт: 10:30 по Минску\n"
+            f"Уведомление при цене < {TARGET_PRICE} BYN\n"
+            f"{OZON_URL}"
+        )
+        state['first_run'] = True
+        state['daily_min'] = price
+        state['last_report_date'] = today_minsk
+        save_state(state)
+        return
+
+    # === Обновление минимума ===
+    daily_min = state.get('daily_min', price)
+    last_report_date = state.get('last_report_date', today_minsk)
+
+    if price < daily_min:
+        daily_min = price
+
+    # === Уведомление при снижении ===
+    if price < TARGET_PRICE:
+        await send_telegram(
+            bot,
+            f"ЦЕНА НИЖЕ {TARGET_PRICE} BYN!\n"
+            f"Сейчас: {price} BYN\n"
+            f"{OZON_URL}"
+        )
+
+    # === Ежедневный отчёт в 10:30 по Минску ===
+    if is_report_time and last_report_date != today_minsk:
+        await send_telegram(
+            bot,
+            f"Ежедневный отчёт за {last_report_date}\n"
+            f"Минимальная цена за день: {daily_min} BYN\n"
+            f"Время: {now_minsk.strftime('%H:%M')} по Минску\n"
+            f"{OZON_URL}"
+        )
+        daily_min = price
+        last_report_date = today_minsk
+
+    # === Сохранение ===
+    state['daily_min'] = daily_min
+    state['last_report_date'] = last_report_date
+    save_state(state)
+
+# === Запуск ===
+if __name__ == "__main__":
+    asyncio.run(main())
