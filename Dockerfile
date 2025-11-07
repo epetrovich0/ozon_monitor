@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
 
 # Копируем файлы
 COPY requirements.txt /app/requirements.txt
-COPY ozon_price_monitor.py /app/ozon_price_monitor.py
+COPY ozon.py /app/ozon.py
 
 WORKDIR /app
 
@@ -20,4 +20,4 @@ WORKDIR /app
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Запускаем скрипт
-CMD ["python3", "ozon_price_monitor.py"]
+CMD ["python3", "ozon.py"]

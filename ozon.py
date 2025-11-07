@@ -3,9 +3,7 @@ import time
 import logging
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
 from telegram import Bot
 
 # === НАСТРОЙКИ ===
@@ -25,14 +23,12 @@ def get_min_price():
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
 
     try:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
+        driver = webdriver.Chrome(options=options)
         logger.info("Открываем Ozon...")
         driver.get(OZON_URL)
-        time.sleep(12)  # Ждём JS
+        time.sleep(12)
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         driver.quit()
