@@ -17,13 +17,15 @@ OZON_URL = 'https://ozon.by/category/televizory-15528/?category_was_predicted=tr
 TARGET_PRICE = 190.0
 DATA_FILE = '/tmp/ozon_monitor.json'
 
+# РАБОЧИЙ ПРОКСИ (BY)
+PROXY = "http://91.221.240.13:8080"
+
 # Минск = UTC+3
 MINSK_TZ = timezone(timedelta(hours=3))
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# === Загрузка/сохранение состояния ===
 def load_state():
     if os.path.exists(DATA_FILE):
         try:
@@ -41,22 +43,34 @@ def save_state(state):
     except Exception as e:
         logger.error(f"Ошибка сохранения: {e}")
 
-# === Получение цены ===
 def get_min_price():
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+
+    # === ПРОКСИ ===
+    if PROXY:
+        options.add_argument(f'--proxy-server={PROXY}')
 
     try:
         driver = webdriver.Chrome(options=options)
-        logger.info("Открываем Ozon...")
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => false});")
+        logger.info(f"Открываем Ozon через прокси {PROXY}...")
         driver.get(OZON_URL)
-        time.sleep(12)
+        time.sleep(15)  # Больше времени на загрузку через прокси
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         driver.quit()
+
+        # Проверка на Cloudflare
+        if "Checking your browser" in soup.text or "ozon.by" not in soup.text:
+            logger.warning("Cloudflare / блокировка")
+            return None
 
         prices = []
         for span in soup.find_all('span', class_='tsHeadline500Medium'):
@@ -68,7 +82,7 @@ def get_min_price():
                 continue
 
         if not prices:
-            logger.warning("Цены не найдены")
+            logger.warning("Цены не найдены (возможно, блокировка)")
             return None
 
         min_price = min(prices)
@@ -81,17 +95,15 @@ def get_min_price():
             driver.quit()
         return None
 
-# === Асинхронная отправка ===
 async def send_telegram(bot: Bot, message: str):
     try:
         await bot.send_message(chat_id=CHAT_ID, text=message)
-        logger.info("Уведомление отправлено в Telegram")
+        logger.info("Уведомление отправлено")
     except Exception as e:
         logger.error(f"Ошибка отправки: {e}")
 
-# === Основная логика ===
 async def main():
-    logger.info("Запуск проверки цен...")
+    logger.info("Запуск проверки...")
     if not TELEGRAM_TOKEN or not CHAT_ID:
         logger.error("TELEGRAM_TOKEN или CHAT_ID не заданы!")
         return
@@ -113,9 +125,8 @@ async def main():
         await send_telegram(
             bot,
             f"Мониторинг запущен!\n"
-            f"Текущая минимальная цена: {price} BYN\n"
-            f"Ежедневный отчёт: 10:30 по Минску\n"
-            f"Уведомление при цене < {TARGET_PRICE} BYN\n"
+            f"Текущая цена: {price} BYN\n"
+            f"Прокси: {PROXY}\n"
             f"{OZON_URL}"
         )
         state['first_run'] = True
@@ -124,14 +135,13 @@ async def main():
         save_state(state)
         return
 
-    # === Обновление минимума ===
+    # === Обновление ===
     daily_min = state.get('daily_min', price)
     last_report_date = state.get('last_report_date', today_minsk)
 
     if price < daily_min:
         daily_min = price
 
-    # === Уведомление при снижении ===
     if price < TARGET_PRICE:
         await send_telegram(
             bot,
@@ -140,23 +150,20 @@ async def main():
             f"{OZON_URL}"
         )
 
-    # === Ежедневный отчёт в 10:30 по Минску ===
     if is_report_time and last_report_date != today_minsk:
         await send_telegram(
             bot,
-            f"Ежедневный отчёт за {last_report_date}\n"
-            f"Минимальная цена за день: {daily_min} BYN\n"
-            f"Время: {now_minsk.strftime('%H:%M')} по Минску\n"
+            f"Отчёт за {last_report_date}\n"
+            f"Мин. цена: {daily_min} BYN\n"
+            f"Время: {now_minsk.strftime('%H:%M')} Минск\n"
             f"{OZON_URL}"
         )
         daily_min = price
         last_report_date = today_minsk
 
-    # === Сохранение ===
     state['daily_min'] = daily_min
     state['last_report_date'] = last_report_date
     save_state(state)
 
-# === Запуск ===
 if __name__ == "__main__":
     asyncio.run(main())
