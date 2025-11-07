@@ -2,12 +2,13 @@
 import os
 import time
 import logging
+import json
 from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from telegram import Bot
-import json
+import asyncio
 
 # === НАСТРОЙКИ ===
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -21,8 +22,8 @@ MINSK_TZ = timezone(timedelta(hours=3))
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-bot = Bot(token=TELEGRAM_TOKEN)
 
+# === Загрузка/сохранение состояния ===
 def load_state():
     if os.path.exists(DATA_FILE):
         try:
@@ -38,8 +39,9 @@ def save_state(state):
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Ошибка сохранения состояния: {e}")
+        logger.error(f"Ошибка сохранения: {e}")
 
+# === Получение цены ===
 def get_min_price():
     options = Options()
     options.add_argument('--headless')
@@ -79,71 +81,19 @@ def get_min_price():
             driver.quit()
         return None
 
-def send_telegram(message):
+# === Асинхронная отправка ===
+async def send_telegram(bot: Bot, message: str):
     try:
-        bot.send_message(chat_id=CHAT_ID, text=message)
+        await bot.send_message(chat_id=CHAT_ID, text=message)
         logger.info("Уведомление отправлено в Telegram")
     except Exception as e:
         logger.error(f"Ошибка отправки: {e}")
 
-def main():
+# === Основная логика ===
+async def main():
     logger.info("Запуск проверки цен...")
-    state = load_state()
-
-    now_utc = datetime.now(timezone.utc)
-    now_minsk = now_utc.astimezone(MINSK_TZ)
-    today_minsk = now_minsk.strftime('%Y-%m-%d')
-    is_report_time = now_minsk.hour == 10 and now_minsk.minute >= 25 and now_minsk.minute <= 35  # 10:25–10:35
-
-    price = get_min_price()
-    if not price:
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        logger.error("TELEGRAM_TOKEN или CHAT_ID не заданы!")
         return
 
-    # === Первый запуск ===
-    if 'first_run' not in state:
-        send_telegram(
-            f"Мониторинг запущен!\n"
-            f"Текущая минимальная цена: {price} BYN\n"
-            f"Отчёт каждый день в 10:30 по Минску\n"
-            f"Уведомление при цене < {TARGET_PRICE} BYN\n"
-            f"{OZON_URL}"
-        )
-        state['first_run'] = True
-        state['daily_min'] = price
-        state['last_report_date'] = today_minsk
-        save_state(state)
-        return
-
-    # === Обновляем минимум ===
-    daily_min = state.get('daily_min', price)
-    last_report_date = state.get('last_report_date', today_minsk)
-
-    if price < daily_min:
-        daily_min = price
-
-    # === Уведомление при снижении ===
-    if price < TARGET_PRICE:
-        send_telegram(
-            f"ЦЕНА НИЖЕ {TARGET_PRICE} BYN!\n"
-            f"Сейчас: {price} BYN\n"
-            f"{OZON_URL}"
-        )
-
-    # === Ежедневный отчёт в 10:30 Минск ===
-    if is_report_time and last_report_date != today_minsk:
-        send_telegram(
-            f"Ежедневный отчёт за {last_report_date}\n"
-            f"Минимальная цена за день: {daily_min} BYN\n"
-            f"Проверено в {now_minsk.strftime('%H:%M')} по Минску\n"
-            f"{OZON_URL}"
-        )
-        daily_min = price  # Сброс на новый день
-        last_report_date = today_minsk
-
-    # === Сохраняем ===
-    state['daily_min'] = daily_min
-    state['last_report_date'] = last_report_date
-    save_state(state)
-
-if __name__ == "__main__":
-    main()
+    bot
