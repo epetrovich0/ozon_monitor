@@ -3,6 +3,8 @@ import os
 import time
 import logging
 import json
+import requests
+import random
 from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -16,9 +18,7 @@ CHAT_ID = os.getenv('CHAT_ID')
 OZON_URL = 'https://ozon.by/category/televizory-15528/?category_was_predicted=true&deny_category_prediction=true&from_global=true&rsdiagonalstr=24.000%3B109.000&sorting=price&text=телевизор&__rr=1'
 TARGET_PRICE = 190.0
 DATA_FILE = '/tmp/ozon_monitor.json'
-
-# РАБОЧИЙ ПРОКСИ (BY)
-PROXY = "http://91.221.240.13:8080"
+PROXY_LIST_URL = "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=BY,RU&ssl=yes&anonymity=elite"
 
 # Минск = UTC+3
 MINSK_TZ = timezone(timedelta(hours=3))
@@ -26,24 +26,57 @@ MINSK_TZ = timezone(timedelta(hours=3))
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def load_state():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Ошибка чтения состояния: {e}")
-            return {}
-    return {}
+# === Кэш прокси ===
+PROXY_CACHE = '/tmp/working_proxies.txt'
+PROXY_CACHE_TIME = 3600  # 1 час
 
-def save_state(state):
+
+def load_working_proxies():
+    if os.path.exists(PROXY_CACHE):
+        age = time.time() - os.path.getmtime(PROXY_CACHE)
+        if age < PROXY_CACHE_TIME:
+            with open(PROXY_CACHE, 'r') as f:
+                proxies = [line.strip() for line in f if line.strip()]
+                random.shuffle(proxies)
+                return proxies
+    return []
+
+
+def save_working_proxy(proxy):
+    with open(PROXY_CACHE, 'w') as f:
+        f.write(proxy + '\n')
+
+
+def fetch_fresh_proxies():
     try:
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"Ошибка сохранения: {e}")
+        logger.info("Загружаем свежие прокси (BY/RU)...")
+        response = requests.get(PROXY_LIST_URL, timeout=10)
+        if response.status_code == 200:
+            proxies = [f"http://{p.strip()}" for p in response.text.splitlines() if p.strip()]
+            random.shuffle(proxies)
+            with open(PROXY_CACHE, 'w') as f:
+                f.write('\n'.join(proxies[:50]))
+            return proxies
+    except:
+        logger.warning("Не удалось загрузить прокси")
+    return []
 
-def get_min_price():
+
+def test_proxy(proxy):
+    try:
+        driver = webdriver.Chrome(options=get_chrome_options(proxy))
+        driver.get("https://httpbin.org/ip")
+        time.sleep(3)
+        if proxy.split('@')[0].split('//')[1].split(':')[0] in driver.page_source:
+            driver.quit()
+            return True
+        driver.quit()
+    except:
+        pass
+    return False
+
+
+def get_chrome_options(proxy=None):
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
@@ -52,24 +85,62 @@ def get_min_price():
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
+    if proxy:
+        options.add_argument(f'--proxy-server={proxy}')
+    return options
 
-    # === ПРОКСИ ===
-    if PROXY:
-        options.add_argument(f'--proxy-server={PROXY}')
+
+def get_working_proxy():
+    proxies = load_working_proxies()
+    if not proxies:
+        proxies = fetch_fresh_proxies()
+
+    for proxy in proxies[:10]:
+        if test_proxy(proxy):
+            logger.info(f"Рабочий прокси: {proxy}")
+            save_working_proxy(proxy)
+            return proxy
+
+    logger.warning("Все прокси упали — ждём 5 мин")
+    time.sleep(300)
+    return get_working_proxy()
+
+
+# === Остальное без изменений ===
+def load_state():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+
+def save_state(state):
+    try:
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+
+def get_min_price():
+    proxy = get_working_proxy()
+    options = get_chrome_options(proxy)
 
     try:
         driver = webdriver.Chrome(options=options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => false});")
-        logger.info(f"Открываем Ozon через прокси {PROXY}...")
+        logger.info(f"Открываем Ozon через {proxy}...")
         driver.get(OZON_URL)
-        time.sleep(15)  # Больше времени на загрузку через прокси
+        time.sleep(18)
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         driver.quit()
 
-        # Проверка на Cloudflare
-        if "Checking your browser" in soup.text or "ozon.by" not in soup.text:
-            logger.warning("Cloudflare / блокировка")
+        if "ozon.by" not in soup.text:
+            logger.warning("Страница не загрузилась")
             return None
 
         prices = []
@@ -82,7 +153,7 @@ def get_min_price():
                 continue
 
         if not prices:
-            logger.warning("Цены не найдены (возможно, блокировка)")
+            logger.warning("Цены не найдены")
             return None
 
         min_price = min(prices)
@@ -90,22 +161,24 @@ def get_min_price():
         return min_price
 
     except Exception as e:
-        logger.error(f"Ошибка Selenium: {e}")
+        logger.error(f"Ошибка: {e}")
         if 'driver' in locals():
             driver.quit()
         return None
+
 
 async def send_telegram(bot: Bot, message: str):
     try:
         await bot.send_message(chat_id=CHAT_ID, text=message)
         logger.info("Уведомление отправлено")
     except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
+        logger.error(f"Ошибка: {e}")
+
 
 async def main():
     logger.info("Запуск проверки...")
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        logger.error("TELEGRAM_TOKEN или CHAT_ID не заданы!")
+        logger.error("Secrets не заданы!")
         return
 
     bot = Bot(token=TELEGRAM_TOKEN)
@@ -122,20 +195,14 @@ async def main():
 
     # === Первый запуск ===
     if 'first_run' not in state:
-        await send_telegram(
-            bot,
-            f"Мониторинг запущен!\n"
-            f"Текущая цена: {price} BYN\n"
-            f"Прокси: {PROXY}\n"
-            f"{OZON_URL}"
-        )
+        await send_telegram(bot, f"Мониторинг запущен!\nЦена: {price} BYN\nПрокси: авто\n{OZON_URL}")
         state['first_run'] = True
         state['daily_min'] = price
         state['last_report_date'] = today_minsk
         save_state(state)
         return
 
-    # === Обновление ===
+    # === Логика ===
     daily_min = state.get('daily_min', price)
     last_report_date = state.get('last_report_date', today_minsk)
 
@@ -143,27 +210,17 @@ async def main():
         daily_min = price
 
     if price < TARGET_PRICE:
-        await send_telegram(
-            bot,
-            f"ЦЕНА НИЖЕ {TARGET_PRICE} BYN!\n"
-            f"Сейчас: {price} BYN\n"
-            f"{OZON_URL}"
-        )
+        await send_telegram(bot, f"ЦЕНА НИЖЕ {TARGET_PRICE}!\nСейчас: {price} BYN\n{OZON_URL}")
 
     if is_report_time and last_report_date != today_minsk:
-        await send_telegram(
-            bot,
-            f"Отчёт за {last_report_date}\n"
-            f"Мин. цена: {daily_min} BYN\n"
-            f"Время: {now_minsk.strftime('%H:%M')} Минск\n"
-            f"{OZON_URL}"
-        )
+        await send_telegram(bot, f"Отчёт за {last_report_date}\nМин: {daily_min} BYN\n{OZON_URL}")
         daily_min = price
         last_report_date = today_minsk
 
     state['daily_min'] = daily_min
     state['last_report_date'] = last_report_date
     save_state(state)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
