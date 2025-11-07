@@ -10,8 +10,8 @@ import json
 import os
 
 # === НАСТРОЙКИ ===
-TELEGRAM_TOKEN = '8531859495:AAHZusQJdMslQ3nQ7yCI1jcBkUwKp9g_nsk'
-CHAT_ID = '789161700'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
 OZON_URL = 'https://ozon.by/category/televizory-15528/?category_was_predicted=true&deny_category_prediction=true&from_global=true&rsdiagonalstr=24.000%3B109.000&sorting=price&text=телевизор&__rr=1'
 TARGET_PRICE = 190.0
 CHECK_INTERVAL_MIN = 30
